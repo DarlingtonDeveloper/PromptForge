@@ -23,6 +23,7 @@ class MockSupabaseClient(SupabaseClient):
             "prompt_branches": [],
             "prompt_usage_log": [],
             "audit_log": [],
+            "prompt_subscriptions": [],
         }
 
     @property

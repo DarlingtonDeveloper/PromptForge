@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from prompt_forge.api.models import PromptCreate, PromptResponse, PromptUpdate
 from prompt_forge.core.registry import PromptRegistry, get_registry
+from prompt_forge.db.client import SupabaseClient, get_supabase_client
 
 router = APIRouter()
 
@@ -40,10 +41,24 @@ async def list_prompts(
     search: str | None = None,
     archived: bool = False,
     registry: PromptRegistry = Depends(get_registry),
+    db: SupabaseClient = Depends(get_supabase_client),
 ) -> list[PromptResponse]:
     """List prompts with optional filters."""
     prompts = registry.list_prompts(type=type, tag=tag, search=search, archived=archived)
-    return [PromptResponse(**p) for p in prompts]
+    
+    # Add subscriber counts
+    all_subs = db.select("prompt_subscriptions")
+    sub_counts: dict[str, int] = {}
+    for s in all_subs:
+        pid = str(s["prompt_id"])
+        sub_counts[pid] = sub_counts.get(pid, 0) + 1
+    
+    result = []
+    for p in prompts:
+        resp = PromptResponse(**p)
+        resp.subscriber_count = sub_counts.get(str(p["id"]), 0)
+        result.append(resp)
+    return result
 
 
 @router.get("/{slug}", response_model=PromptResponse)

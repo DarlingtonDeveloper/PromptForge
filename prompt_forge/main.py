@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import structlog
 from fastapi import FastAPI
@@ -15,10 +17,32 @@ from prompt_forge.utils.logging import setup_logging
 
 logger = structlog.get_logger()
 
+_cleanup_task = None
+
+
+async def subscription_ttl_cleanup():
+    """Background task: delete stale subscriptions every hour."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # 1 hour
+            db = get_supabase_client()
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            subs = db.select("prompt_subscriptions")
+            stale = [s for s in subs if s.get("last_pulled_at", "") < cutoff]
+            for s in stale:
+                db.delete("prompt_subscriptions", s["id"])
+            if stale:
+                logger.info("subscriptions.ttl_cleanup", removed=len(stale))
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("subscriptions.ttl_cleanup_error", error=str(e))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown."""
+    global _cleanup_task
     settings = get_settings()
     setup_logging(settings.log_level)
     logger.info("promptforge.starting", port=settings.port)
@@ -35,7 +59,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.info("promptforge.nats_skipped", reason=str(e))
 
+    # Start TTL cleanup background task
+    _cleanup_task = asyncio.create_task(subscription_ttl_cleanup())
+
     yield
+
+    # Cancel cleanup task
+    if _cleanup_task:
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except asyncio.CancelledError:
+            pass
 
     # Disconnect NATS
     try:

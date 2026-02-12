@@ -22,6 +22,7 @@ class PromptCreate(BaseModel):
     content: dict[str, Any] | None = None
     initial_message: str = "Initial version"
     parent_slug: str | None = None
+    subscriber_count: int = 0
 
 
 class PromptUpdate(BaseModel):
@@ -45,6 +46,7 @@ class PromptResponse(BaseModel):
     updated_at: datetime
     archived: bool
     parent_slug: str | None = None
+    subscriber_count: int = 0
 
 
 # --- Versions ---
@@ -56,6 +58,7 @@ class VersionCreate(BaseModel):
     author: str = "system"
     branch: str = "main"
     override_sections: dict[str, Any] | None = None
+    priority: str = "normal"
 
 
 class VersionResponse(BaseModel):

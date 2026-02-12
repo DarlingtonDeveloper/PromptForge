@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import datetime, timezone
+
+import structlog
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from prompt_forge.api.models import (
     DiffResponse,
@@ -13,8 +16,72 @@ from prompt_forge.api.models import (
 from prompt_forge.core.differ import StructuralDiffer
 from prompt_forge.core.registry import PromptRegistry, get_registry
 from prompt_forge.core.vcs import VersionControl, get_vcs
+from prompt_forge.db.client import SupabaseClient, get_supabase_client
+
+logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+async def _auto_subscribe(
+    prompt_id: str,
+    agent_id: str | None,
+    db: SupabaseClient,
+) -> None:
+    """Upsert subscription and update last_pulled_at."""
+    if not agent_id:
+        return
+    existing = [
+        r for r in db.select("prompt_subscriptions", filters={"prompt_id": prompt_id})
+        if r["agent_id"] == agent_id
+    ]
+    now = datetime.now(timezone.utc).isoformat()
+    if existing:
+        db.update("prompt_subscriptions", existing[0]["id"], {"last_pulled_at": now})
+    else:
+        db.insert("prompt_subscriptions", {
+            "prompt_id": prompt_id,
+            "agent_id": agent_id,
+            "subscribed_at": now,
+            "last_pulled_at": now,
+        })
+
+
+async def _notify_subscribers(
+    prompt_id: str,
+    slug: str,
+    old_version: int,
+    new_version: int,
+    change_note: str,
+    priority: str,
+    db: SupabaseClient,
+) -> None:
+    """Publish targeted events to all subscribers."""
+    try:
+        from prompt_forge.core.events import get_event_publisher
+        publisher = get_event_publisher()
+        if not publisher._connected:
+            return
+
+        subs = db.select("prompt_subscriptions", filters={"prompt_id": prompt_id})
+        for sub in subs:
+            agent_id = sub["agent_id"]
+            subject = f"swarm.forge.agent.{agent_id}.prompt-updated"
+            await publisher.publish(
+                event_type="prompt.updated",
+                subject=subject,
+                data={
+                    "slug": slug,
+                    "prompt_id": prompt_id,
+                    "old_version": old_version,
+                    "new_version": new_version,
+                    "change_note": change_note,
+                    "priority": priority,
+                },
+            )
+            logger.info("subscription.notified", agent_id=agent_id, slug=slug, new_version=new_version)
+    except Exception as e:
+        logger.warning("subscription.notify_failed", error=str(e))
 
 
 @router.post("/{slug}/versions", response_model=VersionResponse, status_code=201)
@@ -23,11 +90,16 @@ async def create_version(
     data: VersionCreate,
     registry: PromptRegistry = Depends(get_registry),
     vcs: VersionControl = Depends(get_vcs),
+    db: SupabaseClient = Depends(get_supabase_client),
 ) -> VersionResponse:
     """Commit a new version of a prompt."""
     prompt = registry.get_prompt(slug)
     if not prompt:
         raise HTTPException(status_code=404, detail=f"Prompt '{slug}' not found")
+
+    # Get old version number
+    history = vcs.history(prompt_id=str(prompt["id"]), branch=data.branch, limit=1)
+    old_version = history[0]["version"] if history else 0
 
     version = vcs.commit(
         prompt_id=str(prompt["id"]),
@@ -36,6 +108,19 @@ async def create_version(
         author=data.author,
         branch=data.branch,
     )
+
+    # Notify subscribers
+    priority = getattr(data, 'priority', 'normal') or 'normal'
+    await _notify_subscribers(
+        prompt_id=str(prompt["id"]),
+        slug=slug,
+        old_version=old_version,
+        new_version=version["version"],
+        change_note=data.message,
+        priority=priority,
+        db=db,
+    )
+
     return VersionResponse(**version)
 
 
@@ -61,8 +146,10 @@ async def get_version(
     slug: str,
     version: int,
     branch: str = "main",
+    x_agent_id: str | None = Header(default=None, alias="X-Agent-ID"),
     registry: PromptRegistry = Depends(get_registry),
     vcs: VersionControl = Depends(get_vcs),
+    db: SupabaseClient = Depends(get_supabase_client),
 ) -> VersionResponse:
     """Get a specific version."""
     prompt = registry.get_prompt(slug)
@@ -72,6 +159,10 @@ async def get_version(
     ver = vcs.get_version(prompt_id=str(prompt["id"]), version=version, branch=branch)
     if not ver:
         raise HTTPException(status_code=404, detail=f"Version {version} not found")
+
+    # Auto-subscribe
+    await _auto_subscribe(str(prompt["id"]), x_agent_id, db)
+
     return VersionResponse(**ver)
 
 
