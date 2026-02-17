@@ -64,7 +64,7 @@ class PromptArchitect:
                 resp = await client.post(
                     f"{self.gateway_url}/v1/chat/completions",
                     json={
-                        "model": "claude-sonnet-4-20250514",
+                        "model": "claude-sonnet-4-6",
                         "messages": [
                             {"role": "system", "content": self.system_prompt},
                             {"role": "user", "content": user_message},
@@ -103,7 +103,7 @@ Respond with a JSON object containing:
       {{"id": "output_format", "label": "Output Format", "content": "..."}}
     ],
     "variables": {{}},
-    "metadata": {{"estimated_tokens": N, "target_model": "claude-sonnet-4-20250514"}}
+    "metadata": {{"estimated_tokens": N, "target_model": "claude-sonnet-4-6"}}
   }}
 
 Only output the JSON, no other text."""
@@ -152,7 +152,7 @@ Only output the JSON, no other text."""
                     "variables": {},
                     "metadata": {
                         "estimated_tokens": 100,
-                        "target_model": "claude-sonnet-4-20250514",
+                        "target_model": "claude-sonnet-4-6",
                     },
                 },
             }
