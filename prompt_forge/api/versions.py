@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Optional, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -307,6 +307,8 @@ async def list_versions(
 async def get_latest_version(
     slug: str,
     branch: str = "main",
+    sections: str | None = Query(default=None, description="Comma-separated section names to include"),
+    role: str | None = Query(default=None, description="Role name to filter sections via role profile"),
     x_agent_id: str | None = Header(default=None, alias="X-Agent-ID"),
     registry: PromptRegistry = Depends(get_registry),
     vcs: VersionControl = Depends(get_vcs),
@@ -324,7 +326,20 @@ async def get_latest_version(
     # Auto-subscribe
     await _auto_subscribe(str(prompt["id"]), x_agent_id, db)
 
-    return VersionResponse(**history[0])
+    version_data = history[0]
+
+    # Section filtering: role takes precedence over sections
+    if role:
+        from prompt_forge.core.role_profiles import get_sections_for_role
+        role_sections = get_sections_for_role(role)
+        if role_sections is not None and "content" in version_data and isinstance(version_data["content"], dict):
+            version_data["content"] = {k: v for k, v in version_data["content"].items() if k in role_sections}
+    elif sections:
+        keys = [s.strip() for s in sections.split(",")]
+        if "content" in version_data and isinstance(version_data["content"], dict):
+            version_data["content"] = {k: v for k, v in version_data["content"].items() if k in keys}
+
+    return VersionResponse(**version_data)
 
 
 @router.get("/{slug}/versions/{version}", response_model=VersionResponse)
