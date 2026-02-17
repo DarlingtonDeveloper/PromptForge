@@ -167,3 +167,113 @@ class TestBranchAPI:
     def test_branch_not_found(self, client):
         resp = client.post("/api/v1/prompts/nonexistent/branches", json={"name": "x"})
         assert resp.status_code == 404
+
+
+class TestNewBranchEndpoints:
+    def test_branch_diff_api(self, client):
+        # Create a prompt
+        client.post(
+            "/api/v1/prompts",
+            json={
+                "slug": "branch-diff-test",
+                "name": "Branch Diff Test",
+                "type": "persona",
+                "content": {
+                    "sections": [
+                        {"id": "identity", "label": "Identity", "content": "Original content"}
+                    ],
+                    "variables": {"var1": "value1"},
+                    "metadata": {},
+                },
+            },
+        )
+
+        # Create a branch
+        client.post("/api/v1/prompts/branch-diff-test/branches", json={"name": "feature"})
+
+        # Update the branch with new content
+        client.post(
+            "/api/v1/prompts/branch-diff-test/versions",
+            json={
+                "content": {
+                    "sections": [{"id": "identity", "label": "Identity", "content": "New content"}],
+                    "variables": {"var1": "value1", "var2": "value2"},
+                    "metadata": {},
+                },
+                "message": "Update feature branch",
+                "branch": "feature",
+            },
+        )
+
+        # Test the diff endpoint
+        resp = client.get("/api/v1/prompts/branch-diff-test/branches/feature/diff")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["branch_name"] == "feature"
+        assert "diff_summary" in data
+        assert "current_content" in data
+        assert "proposed_content" in data
+        assert data["current_content"]["sections"][0]["content"] == "Original content"
+        assert data["proposed_content"]["sections"][0]["content"] == "New content"
+
+    def test_branch_diff_branch_not_found(self, client):
+        client.post(
+            "/api/v1/prompts",
+            json={
+                "slug": "diff-404-test",
+                "name": "Test",
+                "type": "persona",
+                "content": {
+                    "sections": [{"id": "identity", "label": "Identity", "content": "Test"}],
+                    "variables": {},
+                    "metadata": {},
+                },
+            },
+        )
+        resp = client.get("/api/v1/prompts/diff-404-test/branches/nonexistent/diff")
+        assert resp.status_code == 404
+
+    def test_branch_reject_api(self, client):
+        # Create a prompt
+        client.post(
+            "/api/v1/prompts",
+            json={
+                "slug": "branch-reject-test",
+                "name": "Branch Reject Test",
+                "type": "persona",
+                "content": {
+                    "sections": [{"id": "identity", "label": "Identity", "content": "Test"}],
+                    "variables": {},
+                    "metadata": {},
+                },
+            },
+        )
+
+        # Create a branch
+        client.post("/api/v1/prompts/branch-reject-test/branches", json={"name": "unwanted"})
+
+        # Reject the branch
+        resp = client.post(
+            "/api/v1/prompts/branch-reject-test/branches/unwanted/reject",
+            json={"reason": "Not needed anymore"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "rejected"
+
+    def test_branch_reject_branch_not_found(self, client):
+        client.post(
+            "/api/v1/prompts",
+            json={
+                "slug": "reject-404-test",
+                "name": "Test",
+                "type": "persona",
+                "content": {
+                    "sections": [{"id": "identity", "label": "Identity", "content": "Test"}],
+                    "variables": {},
+                    "metadata": {},
+                },
+            },
+        )
+        resp = client.post("/api/v1/prompts/reject-404-test/branches/nonexistent/reject", json={})
+        assert resp.status_code == 404
